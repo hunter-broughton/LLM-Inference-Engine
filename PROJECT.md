@@ -14,8 +14,14 @@ that every phase ends in a shippable artifact with real benchmark numbers.
 ## Current Status
 
 - **Phase:** 0 — CUDA fundamentals (not started)
+- **Scaffolding:** Skeletons for all four phases are in place — kernel test/bench
+  files, the engine package (model/sampling/generate, kv_cache, scheduler),
+  Triton fused-kernel stubs, the FastAPI server, and the k8s/KEDA manifests. Each
+  carries `TODO(you):` markers at the parts to implement; the surrounding
+  structure, docstrings, and boilerplate are done.
 - **Next task:** Confirm the dev environment (`nvidia-smi`, `nvcc --version`), then
-  implement and test the `vector_add` kernel.
+  fill in the `vector_add` kernel (`kernels/cuda/vector_add.cu`) and make its test
+  pass (`pytest kernels/tests/test_vector_add.py`).
 - Update this section at the end of every working session.
 
 ---

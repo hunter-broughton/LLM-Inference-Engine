@@ -1,0 +1,17 @@
+# Phase 3 — stable in-cluster address for the inference pods.
+# ClusterIP is enough for local kind/k3s; reach it with `kubectl port-forward`
+# or a load test running inside the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: inference-server
+  labels:
+    app: inference-server
+spec:
+  selector:
+    app: inference-server
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+  type: ClusterIP

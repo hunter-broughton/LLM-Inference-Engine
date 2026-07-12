@@ -1,0 +1,44 @@
+# Phase 3 — the inference server Deployment.
+#
+# Key bits: it requests a GPU (nvidia.com/gpu), uses the health endpoints as
+# probes, and is the workload KEDA scales (keda-scaledobject.yaml targets it by
+# name). KEDA owns the replica count, so DON'T set `replicas` here — let the
+# ScaledObject drive it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-server
+  labels:
+    app: inference-server
+spec:
+  selector:
+    matchLabels:
+      app: inference-server
+  template:
+    metadata:
+      labels:
+        app: inference-server
+    spec:
+      containers:
+        - name: server
+          # TODO(you): build & push, then set your image ref (local kind: load it
+          # with `kind load docker-image <img>` and use imagePullPolicy: Never).
+          image: mini-llm-inference:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          resources:
+            limits:
+              nvidia.com/gpu: 1   # one GPU per pod; the device plugin schedules it
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10   # model load takes a moment
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 15

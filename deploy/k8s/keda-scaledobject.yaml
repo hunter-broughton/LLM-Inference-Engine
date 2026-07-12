@@ -1,0 +1,28 @@
+# Phase 3 — KEDA autoscaling on a CUSTOM metric (the differentiator).
+#
+# Instead of scaling on CPU (meaningless for a GPU server), scale on how many
+# requests are BACKED UP — the `inference_queue_depth` gauge from /metrics. When
+# the queue grows past the threshold, KEDA adds pods; when it drains, it scales
+# back down (to zero, if you want true scale-to-zero).
+#
+# Requires: KEDA installed in the cluster, and a Prometheus that scrapes the
+# server's /metrics endpoint (the trigger queries Prometheus, not the pod
+# directly). TODO(you): stand up Prometheus and point serverAddress at it.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: inference-server
+spec:
+  scaleTargetRef:
+    name: inference-server      # the Deployment above
+  minReplicaCount: 1
+  maxReplicaCount: 5            # cap at the GPUs you actually have
+  cooldownPeriod: 60           # seconds of quiet before scaling down
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        metricName: inference_queue_depth
+        # Aggregate queue depth across pods; scale to keep it near this per pod.
+        query: sum(inference_queue_depth)
+        threshold: "5"
