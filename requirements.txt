@@ -1,0 +1,15 @@
+# Core engine
+torch>=2.2
+transformers>=4.40
+tokenizers>=0.19
+
+# Triton ships with torch on Linux+CUDA; pinned here for clarity.
+# triton>=2.2
+
+# Serving (Phase 3)
+fastapi>=0.110
+uvicorn[standard]>=0.29
+
+# Benchmarking / testing
+pytest>=8.0
+numpy>=1.26

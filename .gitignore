@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# PyTorch / cpp_extension build artifacts
+build/
+*.so
+*.o
+*.ninja*
+.cache/
+torch_extensions/
+
+# Model weights & data (pull from HF, don't commit)
+*.bin
+*.safetensors
+*.pt
+*.pth
+models/
+weights/
+
+# Profiling output
+*.ncu-rep
+*.nsys-rep
+*.qdrep
+*.sqlite
+
+# Notebooks
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
