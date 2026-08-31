@@ -1,6 +1,6 @@
 """Phase 1 — the single-stream generation loop.
 
-This is the heart of Phase 1 and the thing to implement yourself. The shape:
+This is the heart of Phase 1. The shape:
 
     prefill  : run the whole prompt once, get logits + KV cache
     decode   : loop — sample a token, feed *just that token* back in with the
@@ -36,19 +36,21 @@ def generate(
     device = model.config.device
     input_ids = model.tokenizer(prompt, return_tensors="pt").input_ids.to(device)
 
-    # TODO(you): PREFILL. Run the full prompt through model.forward with
-    #   past_key_values=None to get (logits, past_key_values).
+    # PREFILL. Run the whole prompt once with no cache. This both (a) fills
+    # past_key_values with the K/V vectors for every prompt token and (b) gives
+    # us the logits for the first token we're about to generate.
+    logits, past_key_values = model.forward(input_ids, past_key_values=None)
 
-    # TODO(you): DECODE LOOP, up to max_new_tokens times:
-    #   1. next_id = sample(logits, params)            # [batch]
-    #   2. if next_id == model.eos_token_id: break
-    #   3. yield int(next_id)
-    #   4. logits, past_key_values = model.forward(
-    #          next_id.view(1, 1), past_key_values)    # feed ONE token + cache
-    #
-    # The view(1, 1) matters: after prefill you pass a single new token, not the
-    # growing sequence — the cache already holds everything before it.
-    raise NotImplementedError("implement the prefill + decode loop")
+    # DECODE LOOP. One token per iteration, reusing the cache so the model only
+    # ever does work for the single newest token (not the whole growing sequence).
+    for _ in range(max_new_tokens):
+        next_id = sample(logits, params)          # [batch] == [1]
+        if int(next_id) == model.eos_token_id:    # model says "done" — stop
+            break                                 # before yielding the EOS token
+        yield int(next_id)
+        # Feed just that one token back in, WITH the cache. view(1, 1) reshapes
+        # [1] -> [batch=1, seq=1]; the cache already holds everything before it.
+        logits, past_key_values = model.forward(next_id.view(1, 1), past_key_values)
 
 
 def generate_text(
