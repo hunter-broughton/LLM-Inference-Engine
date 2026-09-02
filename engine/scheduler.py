@@ -40,6 +40,13 @@ class Request:
     status: Status = Status.WAITING
     output_ids: list[int] = field(default_factory=list)
 
+    # Runtime state, filled at admission (prefill) and advanced each step. Kept
+    # per-request because each sequence carries its own HF KV cache and its own
+    # "logits to sample next" — that independence is what lets sequences of
+    # different lengths share one running batch (the point of continuous batching).
+    past_key_values: object = None
+    last_logits: object = None  # [1, vocab] — what step() samples from next
+
     @property
     def done(self) -> bool:
         return self.status is Status.FINISHED
@@ -83,12 +90,28 @@ class Scheduler:
         max_batch, only if the KV cache can fit the prompt), then make it
         smarter if profiling says to.
         """
-        # TODO(you): while len(self.running) < self.max_batch and self.waiting:
-        #   - peek the next waiting request
-        #   - check kv_cache has room for its prompt (allocator.can_allocate)
-        #   - if yes: add_sequence + append_tokens(prompt), mark RUNNING, move it
-        #   - if no: stop (leave it waiting — that's backpressure, not a drop)
-        raise NotImplementedError
+        while len(self.running) < self.max_batch and self.waiting:
+            req = self.waiting[0]                       # FCFS: peek, don't pop yet
+            n = len(req.prompt_ids)
+
+            # Backpressure gate: only admit if the KV pool can hold the prompt.
+            # If not, STOP (don't skip ahead) — the queue stays ordered and the
+            # waiting request is pressure on upstream, never a dropped request.
+            need = self.kv_cache.blocks_needed(0, n)
+            if not self.kv_cache.allocator.can_allocate(need):
+                break
+
+            self.waiting.pop(0)
+            self.kv_cache.add_sequence(req.req_id)
+            self.kv_cache.append_tokens(req.req_id, n)   # reserve prompt blocks
+
+            # PREFILL this request now, so step() only ever does single-token
+            # decodes over the running batch (same prefill/decode split as
+            # generate.py, just once per admitted request).
+            ids = torch.tensor([req.prompt_ids], device=self.model.config.device)
+            req.last_logits, req.past_key_values = self.model.forward(ids, None)
+            req.status = Status.RUNNING
+            self.running.append(req)
 
     @torch.inference_mode()
     def step(self) -> list[Request]:
@@ -101,14 +124,36 @@ class Scheduler:
         if not self.running:
             return []
 
-        # TODO(you): the core continuous-batching step.
-        #   1. Build this step's input: the last token of each running request
-        #      (prompts were already prefilled at admission).
-        #   2. Forward the batch through the model + paged KV cache, getting
-        #      per-sequence next-token logits.
-        #   3. For each running request: sample (via `sample`), append the token,
-        #      grow its KV (kv_cache.append_tokens), and check the stop condition
-        #      (EOS or len(output_ids) >= max_new_tokens) -> Status.FINISHED.
-        #   4. Evict finished requests from self.running, free their KV blocks,
-        #      and collect them to return.
-        raise NotImplementedError
+        # One decode step across the whole live batch. Each running request
+        # samples its next token from the logits it carries (from prefill on its
+        # first step, or from the previous step after that), same ordering as
+        # generate.py: sample -> stop-check -> advance.
+        for req in self.running:
+            next_id = sample(req.last_logits, req.params)
+            tok = int(next_id)
+
+            # Stop conditions come BEFORE advancing: EOS means the model is done
+            # (don't emit the sentinel), and hitting the token budget caps it.
+            if tok == self.model.eos_token_id:
+                req.status = Status.FINISHED
+                continue
+            req.output_ids.append(tok)
+            if len(req.output_ids) >= req.max_new_tokens:
+                req.status = Status.FINISHED
+                continue
+
+            # Advance: feed the one new token back with this request's own cache,
+            # and grow its KV accounting by one token (allocates a fresh block
+            # only when the current one spills over — see blocks_needed).
+            req.last_logits, req.past_key_values = self.model.forward(
+                next_id.view(1, 1), req.past_key_values
+            )
+            self.kv_cache.append_tokens(req.req_id, 1)
+
+        # Evict finished requests: free their KV blocks back to the pool (so a
+        # waiting request can be admitted next step) and hand them to the caller.
+        finished = [r for r in self.running if r.done]
+        for req in finished:
+            self.kv_cache.free_sequence(req.req_id)
+        self.running = [r for r in self.running if not r.done]
+        return finished
