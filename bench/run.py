@@ -48,14 +48,10 @@ def time_one_request(model, prompt: str, max_new_tokens: int, params) -> RunResu
     ttft = None
     n = 0
 
-    # TODO(you): iterate generate(...) and:
-    #   - record `ttft = time.perf_counter() - start` on the first token
-    #   - count tokens
-    # for _ in generate(model, prompt, max_new_tokens, params):
-    #     if ttft is None:
-    #         ttft = time.perf_counter() - start
-    #     n += 1
-    raise NotImplementedError("wire up the generate() loop, then delete this line")
+    for _ in generate(model, prompt, max_new_tokens, params):
+        if ttft is None:
+            ttft = time.perf_counter() - start  # timestamp the FIRST token only
+        n += 1
 
     torch.cuda.synchronize() if torch.cuda.is_available() else None
     total = time.perf_counter() - start
