@@ -1,43 +1,75 @@
 # Deploy
 
-Containerize the server and run it on a local Kubernetes cluster with GPU access
-and KEDA autoscaling. This is the Phase 3 differentiator — the part that turns a
-fast kernel into a *service that scales*.
+Containerize the server and run it on a **local Kubernetes cluster (kind) with
+KEDA autoscaling** — the Phase 3 differentiator: the part that turns a fast
+engine into a *service that scales*. This variant is **CPU-only and free**, so it
+runs on any machine (a Mac included) with no GPU.
 
 ## Files
 
 | File | What it is |
 |---|---|
-| `Dockerfile` | CUDA-runtime image running the FastAPI server |
-| `k8s/deployment.yaml` | The server Deployment (requests 1 GPU) |
+| `Dockerfile` | CPU image running the FastAPI server (gpt2 baked in) |
+| `k8s/deployment.yaml` | The server Deployment (KEDA owns replicas) |
 | `k8s/service.yaml` | ClusterIP service in front of the pods |
-| `k8s/keda-scaledobject.yaml` | Autoscale on `inference_queue_depth` |
+| `k8s/keda-scaledobject.yaml` | Autoscale on the `queue_depth` custom metric |
+| `demo.sh` | One command: cluster + build + KEDA + apply |
+| `loadtest.sh` | Fire concurrent requests to trigger scale-out |
+| `teardown.sh` | Delete the cluster (nothing left running) |
 
-## Local cluster (kind) — rough path
+## Prerequisites
 
 ```bash
-# 1. Build and load the image into kind.
-docker build -t mini-llm-inference:latest -f deploy/Dockerfile .
-kind load docker-image mini-llm-inference:latest
-
-# 2. GPU access in kind requires the NVIDIA device plugin (and the NVIDIA
-#    container toolkit on the host). Install the device plugin DaemonSet.
-
-# 3. Install KEDA + a Prometheus that scrapes /metrics.
-
-# 4. Apply the manifests.
-kubectl apply -f deploy/k8s/
-
-# 5. Generate load and watch it scale.
-kubectl get pods -w
+# Docker Desktop must be RUNNING. Then:
+brew install kind kubectl helm
 ```
 
-## Acceptance (from PROJECT.md)
+## Run it (and watch it scale)
 
-- One-command deploy to a local cluster.
-- Pods demonstrably scale under load.
-- README shows the architecture diagram **and** the numbers.
+```bash
+./deploy/demo.sh                 # stand everything up (first run pulls torch, ~minutes)
 
-> GPU-in-kind is the fiddly part; if it fights you, k3s with the NVIDIA runtime
-> or a single rented GPU node is a fine fallback. The scaling *story* is what
-> matters, not the specific local distro.
+# then, in two more terminals:
+kubectl get pods -w              # terminal A: watch replicas change
+kubectl port-forward svc/inference-server 8000:80   # terminal B
+./deploy/loadtest.sh             # terminal B (new tab): generate load
+```
+
+Under load, `queue_depth` climbs past the `targetValue` and KEDA scales the
+Deployment from 1 toward `maxReplicaCount: 5`; after the load stops and the
+`cooldownPeriod` passes, it scales back down. Inspect the autoscaler:
+
+```bash
+kubectl get scaledobject,hpa
+kubectl describe scaledobject inference-server
+```
+
+Tear down when done (the whole point of the local demo — nothing keeps running):
+
+```bash
+./deploy/teardown.sh
+```
+
+## How the autoscaling works
+
+KEDA's `metrics-api` trigger polls `GET /metrics.json` every `pollingInterval`
+seconds and reads the `queue_depth` value. It creates an HPA under the hood targeting
+`targetValue` queued requests per pod. The server admits only `max_batch` requests
+at a time (through the continuous-batching scheduler), so excess requests WAIT —
+a deeper queue → more pods. This is **custom-metric autoscaling** — scaling on a
+signal that actually reflects inference backlog, not on CPU%.
+
+## Scaling to a real GPU cluster
+
+The app code is identical on GPU. To deploy for real:
+
+1. Base the image on `nvidia/cuda:12.4.1-runtime-ubuntu22.04` and install the CUDA
+   torch wheel (see the comment in `Dockerfile`).
+2. Add `resources.limits: {nvidia.com/gpu: 1}` to `deployment.yaml` (needs the
+   NVIDIA device plugin on the nodes).
+3. For fleet-accurate scaling, scrape every pod's `/metrics` (Prometheus format)
+   with Prometheus and switch the ScaledObject to a `prometheus` trigger on
+   `sum(inference_queue_depth)`.
+
+The manifests here drop onto GKE/EKS unchanged apart from those three edits.
+```

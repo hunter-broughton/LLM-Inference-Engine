@@ -1,9 +1,8 @@
-# Phase 3 — the inference server Deployment.
+# Phase 3 — the inference server Deployment (CPU / local-demo variant).
 #
-# Key bits: it requests a GPU (nvidia.com/gpu), uses the health endpoints as
-# probes, and is the workload KEDA scales (keda-scaledobject.yaml targets it by
-# name). KEDA owns the replica count, so DON'T set `replicas` here — let the
-# ScaledObject drive it.
+# KEDA owns the replica count (keda-scaledobject.yaml targets this by name), so
+# DON'T set `replicas` here — let the ScaledObject drive it. For a real GPU
+# deploy, add `resources.limits: {nvidia.com/gpu: 1}` and use the CUDA image.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -21,24 +20,31 @@ spec:
     spec:
       containers:
         - name: server
-          # TODO(you): build & push, then set your image ref (local kind: load it
-          # with `kind load docker-image <img>` and use imagePullPolicy: Never).
+          # Built locally and loaded into kind with `kind load docker-image`, so
+          # never pull from a registry.
           image: mini-llm-inference:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Never
           ports:
             - containerPort: 8000
+          env:
+            - name: MODEL_NAME
+              value: "gpt2"
           resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
             limits:
-              nvidia.com/gpu: 1   # one GPU per pod; the device plugin schedules it
+              cpu: "2"
+              memory: "2Gi"
           readinessProbe:
             httpGet:
               path: /healthz
               port: 8000
-            initialDelaySeconds: 10   # model load takes a moment
+            initialDelaySeconds: 5     # model is baked into the image, loads fast
             periodSeconds: 5
           livenessProbe:
             httpGet:
               path: /healthz
               port: 8000
-            initialDelaySeconds: 30
+            initialDelaySeconds: 20
             periodSeconds: 15

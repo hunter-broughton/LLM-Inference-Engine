@@ -1,28 +1,32 @@
 # Phase 3 — KEDA autoscaling on a CUSTOM metric (the differentiator).
 #
-# Instead of scaling on CPU (meaningless for a GPU server), scale on how many
-# requests are BACKED UP — the `inference_queue_depth` gauge from /metrics. When
-# the queue grows past the threshold, KEDA adds pods; when it drains, it scales
-# back down (to zero, if you want true scale-to-zero).
+# Instead of scaling on CPU (meaningless for an inference server), scale on how
+# many requests are IN FLIGHT — the `inflight` gauge from /metrics.json. When
+# concurrent load climbs past the threshold, KEDA adds pods; when it drains, it
+# scales back down after the cooldown.
 #
-# Requires: KEDA installed in the cluster, and a Prometheus that scrapes the
-# server's /metrics endpoint (the trigger queries Prometheus, not the pod
-# directly). TODO(you): stand up Prometheus and point serverAddress at it.
+# This uses KEDA's `metrics-api` scaler, which GETs the endpoint directly — no
+# Prometheus to stand up, so the local demo has one moving part instead of three.
+#
+# NOTE (honesty): the ClusterIP service load-balances, so a single poll hits one
+# pod's inflight, not the fleet sum. That's fine to trigger scaling in a demo;
+# the production-correct version scrapes all pods with Prometheus and scales on
+# `sum(inference_inflight_requests)` (the /metrics endpoint is already Prometheus
+# format for exactly that upgrade).
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
   name: inference-server
 spec:
   scaleTargetRef:
-    name: inference-server      # the Deployment above
+    name: inference-server        # the Deployment above
   minReplicaCount: 1
-  maxReplicaCount: 5            # cap at the GPUs you actually have
-  cooldownPeriod: 60           # seconds of quiet before scaling down
+  maxReplicaCount: 6
+  cooldownPeriod: 30              # seconds of quiet before scaling down
+  pollingInterval: 5             # how often KEDA checks the metric
   triggers:
-    - type: prometheus
+    - type: metrics-api
       metadata:
-        serverAddress: http://prometheus.monitoring.svc:9090
-        metricName: inference_queue_depth
-        # Aggregate queue depth across pods; scale to keep it near this per pod.
-        query: sum(inference_queue_depth)
-        threshold: "5"
+        url: "http://inference-server.default.svc.cluster.local/metrics.json"
+        valueLocation: "queue_depth"
+        targetValue: "2"          # ~2 queued requests per pod; deeper queue => scale out
