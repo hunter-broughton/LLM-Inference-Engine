@@ -29,22 +29,29 @@ def _rmsnorm_kernel(
     eps,
     BLOCK_SIZE: tl.constexpr,  # >= N, power of two; one row fits in one program
 ):
-    row = tl.program_id(0)
-    # TODO(you):
-    #   offs = tl.arange(0, BLOCK_SIZE); mask = offs < N
-    #   x = tl.load(x_ptr + row * stride_row + offs, mask=mask, other=0.0)
-    #   ms = tl.sum(x * x, axis=0) / N
-    #   x_norm = x * tl.rsqrt(ms + eps)
-    #   w = tl.load(w_ptr + offs, mask=mask)
-    #   tl.store(y_ptr + row * stride_row + offs, x_norm * w, mask=mask)
-    pass
+    row = tl.program_id(0)                       # one program instance per row
+    offs = tl.arange(0, BLOCK_SIZE)
+    mask = offs < N
+
+    # Read the row once. Compute the mean-square in fp32 for stability even if the
+    # activations are fp16 (squares of fp16 lose precision fast).
+    x = tl.load(x_ptr + row * stride_row + offs, mask=mask, other=0.0).to(tl.float32)
+    ms = tl.sum(x * x, axis=0) / N
+    x_norm = x * tl.rsqrt(ms + eps)
+
+    w = tl.load(w_ptr + offs, mask=mask, other=0.0).to(tl.float32)
+    y = (x_norm * w).to(y_ptr.dtype.element_ty)
+    tl.store(y_ptr + row * stride_row + offs, y, mask=mask)   # write the row once
 
 
 def fused_rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     """Drop-in for the PyTorch RMSNorm reference, backed by the Triton kernel."""
     assert x.is_cuda and x.dim() == 2, "expects a 2D [rows, N] CUDA tensor"
+    x = x.contiguous()
     n_rows, N = x.shape
     y = torch.empty_like(x)
-    # TODO(you): pick BLOCK_SIZE = triton.next_power_of_2(N), launch with a 1D
-    # grid of n_rows programs, passing x.stride(0) as stride_row.
-    raise NotImplementedError("launch _rmsnorm_kernel")
+    BLOCK_SIZE = triton.next_power_of_2(N)       # whole row fits in one program
+    _rmsnorm_kernel[(n_rows,)](
+        x, weight, y, x.stride(0), N, eps, BLOCK_SIZE=BLOCK_SIZE,
+    )
+    return y
