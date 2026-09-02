@@ -13,15 +13,32 @@ that every phase ends in a shippable artifact with real benchmark numbers.
 
 ## Current Status
 
-- **Phase:** 0 — CUDA fundamentals (not started)
-- **Scaffolding:** Skeletons for all four phases are in place — kernel test/bench
-  files, the engine package (model/sampling/generate, kv_cache, scheduler),
-  Triton fused-kernel stubs, the FastAPI server, and the k8s/KEDA manifests. Each
-  carries `TODO(you):` markers at the parts to implement; the surrounding
-  structure, docstrings, and boilerplate are done.
-- **Next task:** Confirm the dev environment (`nvidia-smi`, `nvcc --version`), then
-  fill in the `vector_add` kernel (`kernels/cuda/vector_add.cu`) and make its test
-  pass (`pytest kernels/tests/test_vector_add.py`).
+- **Phase:** 1 & 2 core complete; 3 (serving + local K8s/KEDA) runnable. GPU work
+  moved to **Google Colab (free T4)** — the local Pascal PC is no longer available.
+- **Done:**
+  - **Phase 1** — `sampling.py` (greedy/temp/top-k/top-p), `generate.py`
+    (prefill + decode loop), `bench/run.py`. GPT-2 generates coherent text; CPU
+    baseline recorded in `BENCHMARKS.md` (128.5 tok/s, 13.3 ms TTFT).
+  - **Phase 2 (control plane + batched throughput)** — paged KV cache
+    (`kv_cache.py`), continuous-batching scheduler (`scheduler.py`), and batched
+    decode (`batched.py`); 10 CPU tests passing incl. batched==single-stream
+    correctness. **Measured 4.40× (C=8) / 7.84× (C=32) aggregate throughput** over
+    the HF `generate()` baseline (`bench/concurrency.py`, `bench/baseline_hf.py`).
+  - **Phase 2 (fused kernel)** — FlashAttention-style Triton kernel
+    (`kernels/triton/fused_attention.py`), correctness-gated vs PyTorch (~2e-3),
+    **1.48× faster than naive attention at seq=4096** (Colab T4). Wired into GPT-2
+    (eager→Triton): **+17.4% median end-to-end throughput** at long context
+    (batch 16, 960-tok prompt) on an RTX 4090, correctness-gated, profiled with
+    **Nsight Systems** (`nsys`). Fixed a decode-loop autotune bug (key on N_KV
+    re-tuned every token, ~14× slowdown) → single fixed config.
+  - **Phase 0 (first kernel)** — `vector_add.cu` implemented; run it on a free T4
+    via `notebooks/phase0_vector_add_colab.ipynb`.
+  - **Phase 3** — FastAPI server with SSE streaming + `/metrics(.json)`; CPU
+    Dockerfile; local **kind + KEDA** autoscaling on the `inflight` custom metric;
+    **demonstrated 1 → 7 pods under load** (`deploy/demo.sh`, `loadtest.sh`, `teardown.sh`).
+- **Next task (optional depth):** softmax/matmul CUDA kernels; wire the Triton
+  attention into GPT-2 for an end-to-end tok/s number; re-run Phase 1/2 benches on
+  the T4 for GPU headline figures.
 - Update this section at the end of every working session.
 
 ---

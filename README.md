@@ -4,19 +4,52 @@ A from-the-ground-up LLM **inference** engine ("mini vLLM") — hand-written CUD
 kernels, a paged KV cache, a continuous-batching scheduler, and a FastAPI serving layer
 that autoscales on Kubernetes.
 
-> **Status:** Phase 0 (CUDA fundamentals) — in progress. See [PROJECT.md](PROJECT.md)
-> for the full plan and [BENCHMARKS.md](BENCHMARKS.md) for measured results.
+> **Status:** Phases 1 & 2 core complete; single-stream generation, paged KV cache,
+> continuous-batching scheduler, streaming FastAPI server, and a local Kubernetes +
+> KEDA autoscaling demo all working. GPU/CUDA work runs on a free Google Colab T4.
+> See [PROJECT.md](PROJECT.md) for the plan and [BENCHMARKS.md](BENCHMARKS.md) for numbers.
 
 ## Results
 
-> Headline throughput/latency numbers go here as phases complete. Recruiters and
-> engineers read the top first — this table is the lead. Placeholder until Phase 1.
+**Phase 2 — batched decode vs PyTorch baseline** (`gpt2`, CPU, greedy, `bench/concurrency.py`):
 
-| Metric | Baseline (PyTorch) | This engine | Hardware |
+| Concurrency | PyTorch baseline (HF generate) | This engine (batched) | Speedup |
 |---|---|---|---|
-| Throughput (tok/s, 32 concurrent) | _TBD_ | _TBD_ | _TBD_ |
-| TTFT (p50) | _TBD_ | _TBD_ | _TBD_ |
-| Latency (p99) | _TBD_ | _TBD_ | _TBD_ |
+| 8 | 102.7 tok/s | 451.8 tok/s | **4.4×** |
+| 32 | 106.7 tok/s | 836.5 tok/s | **7.8×** |
+
+Batched greedy is verified token-identical to single-stream greedy (`test_batched.py`),
+so the throughput gain changes nothing about the output.
+
+Phase 1 single-stream baseline (`bench/run.py`): **128.5 tok/s**, **13.3 ms** TTFT (CPU).
+
+**Phase 2 — custom Triton attention kernel**: FlashAttention-style fused kernel, verified
+against PyTorch, **1.48× faster than naive attention at seq=4096** (Colab T4). Wired into
+GPT-2, it delivers **+17% median end-to-end throughput** vs eager attention at long context
+(RTX 4090), profiled with Nsight Systems (`notebooks/phase3_end2end_attention_colab.ipynb`, `notebooks/NSIGHT.md`).
+
+**Phase 3 — Kubernetes autoscaling** (local kind + KEDA): scaled **1 → 7 pods** under load
+on a custom in-flight-requests metric (`deploy/`).
+
+> CPU for Phases 1–2 throughput, T4 for the kernel; a GPU widens the batching gap further.
+
+## Quick start
+
+```bash
+# 1. Generate text (Phase 1)
+python bench/run.py --n 5 --max-new 32
+
+# 2. Run the tests (sampling, paged KV cache, continuous-batching scheduler)
+pytest engine/tests/ -q
+
+# 3. Serve it with token streaming
+uvicorn serving.app:app --port 8000
+curl -N -X POST localhost:8000/generate -H 'content-type: application/json' \
+  -d '{"prompt":"The future of GPU computing is","max_new_tokens":20}'
+
+# 4. Local Kubernetes + KEDA autoscaling demo (needs Docker + kind + kubectl + helm)
+./deploy/demo.sh
+```
 
 ## Architecture
 
@@ -33,7 +66,9 @@ client ──HTTP/stream──► FastAPI (serving/)
                 custom kernels (kernels/: CUDA + Triton)
 ```
 
-_Architecture diagram and detail to be expanded in Phase 3._
+Under load, KEDA reads the server's `/metrics.json` (`inflight` gauge) and scales
+the Deployment's pod count — custom-metric autoscaling on real inference load, not
+CPU%. See [deploy/README.md](deploy/README.md).
 
 ## Setup
 
